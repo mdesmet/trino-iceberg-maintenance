@@ -32,7 +32,10 @@ The job can be scheduled using cron and configured through environment variables
 
 It requires the latest trino-python-client to be installed.
 
+The amount of simultaneous maintenance jobs can be configured through setting the `NUM_WORKERS` environment variable (default is 5).
+
 ```bash
+export NUM_WORKERS=10
 export TRINO_HOST=localhost
 export TRINO_PORT=8080
 export TRINO_USER=admin

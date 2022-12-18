@@ -9,9 +9,9 @@ import trino.auth
 from trino.dbapi import connect
 
 # The number of maintenance jobs you want to run at the same time
-NUM_WORKERS = 5
+NUM_WORKERS = os.getenv("NUM_WORKERS", 5)
 # The table that contains the maintenance configuration
-MAINTENANCE_TABLE = "iceberg_maintenance_schedule"
+MAINTENANCE_TABLE = os.getenv("MAINTENANCE_TABLE", "iceberg_maintenance_schedule")
 
 logger = logging.getLogger("IcebergMaintenance")
 
@@ -59,7 +59,7 @@ def run_maintenance(trino_connection, connection_factory):
     cur.execute(f"SELECT * FROM {MAINTENANCE_TABLE}")
     tasks = cur.fetchall()
 
-    with ThreadPoolExecutor(max_workers=NUM_WORKERS) as executor:
+    with ThreadPoolExecutor(max_workers=int(NUM_WORKERS)) as executor:
         futures = []
         for task in tasks:
             futures.append(executor.submit(MaintenanceTask(
