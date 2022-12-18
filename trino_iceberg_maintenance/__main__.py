@@ -1,9 +1,11 @@
 import datetime
 import logging
+import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from textwrap import dedent
 from typing import NamedTuple, List, Optional
 
+import trino.auth
 from trino.dbapi import connect
 
 # The number of maintenance jobs you want to run at the same time
@@ -15,34 +17,60 @@ logger = logging.getLogger("IcebergMaintenance")
 
 
 def get_trino_connection():
+    user = os.getenv("TRINO_USER", "admin")
+    password = os.getenv("TRINO_PASSWORD")
     return connect(
-        host="<host>",
-        port=443,
-        user="<username>",
-        catalog="<catalog>",
-        schema="<schema>",
+        host=os.getenv("TRINO_HOST", "localhost"),
+        port=int(os.getenv("TRINO_PORT", 443)),
+        user=user,
+        auth=trino.auth.BasicAuthentication(user, password),
+        catalog=os.getenv("TRINO_CATALOG"),
+        schema=os.getenv("TRINO_SCHEMA"),
         experimental_python_types=True,
     )
 
 
-def create_if_not_exists_management_table():
+def create_if_not_exists_management_table(trino_connection):
     create_table_statement = dedent(f"""
-    CREATE TABLE IF EXISTS {MAINTENANCE_TABLE} (
-        table_name VARCHAR,
-        should_analyze INTEGER NOT NULL,
+    CREATE TABLE IF NOT EXISTS {MAINTENANCE_TABLE} (
+        table_name VARCHAR NOT NULL,
+        should_analyze INTEGER,
         last_analyzed_on TIMESTAMP(6),
-        columns_to_analyze ARRAY[VARCHAR],
-        should_optimize INTEGER NOT NULL,
-        last_optimized_on TIMESTAMP(6)
+        days_to_analyze INTEGER,
+        columns_to_analyze ARRAY(VARCHAR),
+        should_optimize INTEGER,
+        last_optimized_on TIMESTAMP(6),
         days_to_optimize INTEGER,
-        should_expire_snapshots INTEGER NOT NULL,
+        should_expire_snapshots INTEGER,
         retention_days_snapshots INTEGER,
-        should_remove_orphan_files INTEGER NOT NULL,
+        should_remove_orphan_files INTEGER,
         retention_days_orphan_files INTEGER
-    """)
-    with get_trino_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute(create_table_statement)
+    )""")
+    cursor = trino_connection.cursor()
+    cursor.execute(create_table_statement)
+
+
+def run_maintenance(trino_connection, connection_factory):
+    cur = trino_connection.cursor()
+    cur.execute(f"SELECT * FROM {MAINTENANCE_TABLE}")
+    tasks = cur.fetchall()
+
+    with ThreadPoolExecutor(max_workers=NUM_WORKERS) as executor:
+        futures = []
+        for task in tasks:
+            futures.append(executor.submit(MaintenanceTask(
+                connection_factory,
+                MaintenanceProperties.from_row(task)
+            ).execute))
+
+        for future in as_completed(futures):
+            try:
+                future.result()
+            except MaintenanceTaskException as e:
+                logger.exception(
+                    "An exception has occurred while running maintenance tasks for "
+                    f"{e.maintenance_properties.table_name}"
+                )
 
 
 class MaintenanceProperties(NamedTuple):
@@ -75,7 +103,12 @@ class MaintenanceTaskException(Exception):
 
 
 class MaintenanceTask:
-    def __init__(self, maintenance_properties: MaintenanceProperties):
+    def __init__(
+        self,
+        connection_factory,
+        maintenance_properties: MaintenanceProperties
+    ):
+        self.connection_factory = connection_factory
         self.maintenance_properties = maintenance_properties
 
     def execute(self):
@@ -95,7 +128,7 @@ class MaintenanceTask:
 
         ) = self.maintenance_properties
         try:
-            with get_trino_connection() as conn:
+            with self.connection_factory() as conn:
                 cur = conn.cursor()
                 # Removing orphan files
                 if should_remove_orphan_files:
@@ -119,11 +152,11 @@ class MaintenanceTask:
 
                 # Optimizing
                 if (
-                        should_optimize
-                        and (
+                    should_optimize
+                    and (
                         not last_optimized_on
-                        or last_optimized_on + datetime.timedelta(days=days_to_optimize) > datetime.datetime.now()
-                )
+                        or last_optimized_on + datetime.timedelta(days=days_to_optimize) <= datetime.datetime.now()
+                    )
                 ):
                     logging.info(f"Optimizing {table_name}")
 
@@ -141,13 +174,15 @@ class MaintenanceTask:
                         should_analyze
                         and (
                         not last_analyzed_on
-                        or last_analyzed_on + datetime.timedelta(days=days_to_analyze) > datetime.datetime.now()
+                        or last_analyzed_on + datetime.timedelta(days=days_to_analyze) <= datetime.datetime.now()
                 )
                 ):
                     logging.info(f"Analyzing {table_name}")
-
-                    with_columns = "" if len(columns_to_analyze) == 0 else f" WITH ({', '.join(columns_to_analyze)})"
-                    cur.execute(f"ANALYZE {table_name}{with_columns}")
+                    with_columns = "" if columns_to_analyze is None or len(columns_to_analyze) == 0 else f""" 
+                    WITH (columns = ARRAY[{', '.join(map(lambda x: f"'{x}'", columns_to_analyze))}])"""
+                    cur.execute(dedent(f"""
+                    ANALYZE {table_name}
+                    {with_columns}"""))
 
                     cur.execute(dedent(f"""
                         UPDATE {MAINTENANCE_TABLE} 
@@ -159,25 +194,6 @@ class MaintenanceTask:
 
 
 if __name__ == '__main__':
-    create_if_not_exists_management_table()
-
     with get_trino_connection() as conn:
-        cur = conn.cursor()
-        result = cur.execute(f"SELECT * FROM {MAINTENANCE_TABLE}")
-        tasks = result.fetchall()
-
-    with ThreadPoolExecutor(max_workers=NUM_WORKERS) as executor:
-        futures = []
-        for task in tasks:
-            futures.append(executor.submit(MaintenanceTask(
-                MaintenanceProperties.from_row(task)
-            ).execute))
-
-        for future in as_completed(futures):
-            try:
-                future.result()
-            except MaintenanceTaskException as e:
-                logger.exception(
-                    "An exception has occurred while running maintenance tasks for "
-                    f"{e.maintenance_properties.table_name}"
-                )
+        create_if_not_exists_management_table(conn)
+        run_maintenance(conn, get_trino_connection)

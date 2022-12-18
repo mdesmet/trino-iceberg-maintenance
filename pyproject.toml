@@ -1,0 +1,20 @@
+[tool.poetry]
+name = "trino-iceberg-maintenance"
+version = "0.1.0"
+description = ""
+authors = ["Michiel De Smet <michiel.desmet@starburstdata.com>"]
+readme = "README.md"
+packages = [{include = "trino_iceberg_maintenance"}]
+
+[tool.poetry.dependencies]
+python = "^3.9"
+trino = "^0.320.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.2.0"
+testcontainers = "^3.7.1"
+freezegun = "^1.2.2"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
