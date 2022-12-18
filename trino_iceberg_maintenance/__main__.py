@@ -19,13 +19,17 @@ logger = logging.getLogger("IcebergMaintenance")
 def get_trino_connection():
     user = os.getenv("TRINO_USER", "admin")
     password = os.getenv("TRINO_PASSWORD")
+    host = os.getenv("TRINO_HOST", "localhost")
+    port = os.getenv("TRINO_PORT", 8080)
+    catalog = os.getenv("TRINO_CATALOG", "iceberg")
+    schema = os.getenv("TRINO_SCHEMA", "default")
     return connect(
-        host=os.getenv("TRINO_HOST", "localhost"),
-        port=int(os.getenv("TRINO_PORT", 443)),
+        host=host,
+        port=int(port),
         user=user,
-        auth=trino.auth.BasicAuthentication(user, password),
-        catalog=os.getenv("TRINO_CATALOG"),
-        schema=os.getenv("TRINO_SCHEMA"),
+        auth=trino.auth.BasicAuthentication(user, password) if password is not None else None,
+        catalog=catalog,
+        schema=schema,
         experimental_python_types=True,
     )
 
