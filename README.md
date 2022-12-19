@@ -42,5 +42,5 @@ export TRINO_USER=admin
 export TRINO_PASSWORD=...
 export TRINO_CATALOG=iceberg
 export TRINO_SCHEMA=default
-python -m trino-iceberg-maintenance
+python -m trino_iceberg_maintenance
 ```
