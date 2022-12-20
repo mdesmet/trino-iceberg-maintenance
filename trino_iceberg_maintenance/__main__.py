@@ -31,6 +31,7 @@ def get_trino_connection():
         catalog=catalog,
         schema=schema,
         experimental_python_types=True,
+        http_scheme="https" if password is not None else "http"
     )
 
 
