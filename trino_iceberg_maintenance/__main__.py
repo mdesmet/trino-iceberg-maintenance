@@ -1,6 +1,7 @@
 import datetime
 import logging
 import os
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from textwrap import dedent
 from typing import NamedTuple, List, Optional
@@ -14,6 +15,7 @@ NUM_WORKERS = os.getenv("NUM_WORKERS", 5)
 MAINTENANCE_TABLE = os.getenv("MAINTENANCE_TABLE", "iceberg_maintenance_schedule")
 
 logger = logging.getLogger("IcebergMaintenance")
+maintenance_table_lock = threading.RLock()
 
 
 def get_trino_connection():
@@ -166,12 +168,12 @@ class MaintenanceTask:
                     logging.info(f"Optimizing {table_name}")
 
                     cur.execute(f"ALTER TABLE {table_name} EXECUTE optimize")
-
-                    cur.execute(dedent(f"""
-                        UPDATE {MAINTENANCE_TABLE} 
-                        SET last_optimized_on = current_timestamp(6)
-                        WHERE table_name = '{table_name}'
-                        """))
+                    with maintenance_table_lock:
+                        cur.execute(dedent(f"""
+                            UPDATE {MAINTENANCE_TABLE} 
+                            SET last_optimized_on = current_timestamp(6)
+                            WHERE table_name = '{table_name}'
+                            """))
                     logging.info(f"Optimizing {table_name} completed")
 
                 # Analyzing
@@ -188,12 +190,13 @@ class MaintenanceTask:
                     cur.execute(dedent(f"""
                     ANALYZE {table_name}
                     {with_columns}"""))
-
-                    cur.execute(dedent(f"""
-                        UPDATE {MAINTENANCE_TABLE} 
-                        SET last_analyzed_on = current_timestamp(6)
-                        WHERE table_name = '{table_name}'
-                        """))
+                    with maintenance_table_lock:
+                        cur.execute(dedent(f"""
+                            UPDATE {MAINTENANCE_TABLE} 
+                            SET last_analyzed_on = current_timestamp(6)
+                            WHERE table_name = '{table_name}'
+                            """))
+                    logging.info(f"Analyzing {table_name} completed")
         except Exception as e:
             raise MaintenanceTaskException(self.maintenance_properties) from e
 
